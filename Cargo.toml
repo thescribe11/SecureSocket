@@ -1,0 +1,19 @@
+[package]
+name = "secure_socket"
+version = "0.1.0"
+edition = "2021"
+license = "GPLv3+"
+description = "A small encrypted wrapper around TCP."
+readme = "README.md"
+keywords = ["socket", "tcp"]
+categories = ["cryptography", "network-programming"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rsa = {version="0.6.1", features=["serde"]}
+rand = "0.8.5"
+base64 = "0.13.0"
+sha2 = "0.10.2"
+chacha20poly1305 = "*"
+chrono = "0.4.19"
