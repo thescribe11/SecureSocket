@@ -2,7 +2,7 @@
 name = "secure_socket"
 version = "0.0.3"
 edition = "2021"
-license = "GPLv3+"
+license = "AGPL-3.0-or-later"
 description = "A small encrypted wrapper around TCP."
 readme = "README.md"
 keywords = ["socket", "tcp"]
