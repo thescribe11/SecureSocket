@@ -286,7 +286,7 @@ impl SecureSocket {
         }
     }
 
-    pub fn recv_archive (&mut self) -> Result<String, Reason> {
+    pub fn recv_file (&mut self) -> Result<String, Reason> {
         //! Receive a file
         //! 
         //! Returns: Result of either filename or error reason. Error mapping:
@@ -387,7 +387,7 @@ impl SecureSocket {
     }
 
 
-    pub fn send_archive (&mut self, hostname: String, file: File) -> Result<(), Reason> {
+    pub fn send_file (&mut self, hostname: String, file: File) -> Result<(), Reason> {
         //! Send a file over the network
         
         match self.send_hostname(hostname) {
@@ -401,7 +401,7 @@ impl SecureSocket {
         let mut buf: Vec<u8>;
         let mut n = [0u8; 12];
         let mut nonce: &Nonce;
-        let mut reader = BufReader::new(f);
+        let mut reader = BufReader::new(file);
         
         let mut done = false;
         while !done {
