@@ -173,7 +173,7 @@ impl SecureSocket {
         let mut key = vec![0u8; 32];
         if role == SocketRole::Server {  // Send symmetric key
             key.try_fill(&mut self.rng).unwrap();  // Create key raw data
-            let enc = &self.his_rsa.encrypt(&mut self.rng, PaddingScheme::PKCS1v15Encrypt, &key).unwrap();
+            let enc = &self.his_rsa.encrypt(&mut self.rng, PaddingScheme::new_pkcs1v15_encrypt(), &key).unwrap();
             self.socket.write_all(PacketHeader {purpose: PacketType::SendKey, data_len: enc.len() as u32}.to_bytes().as_ref()).unwrap();
             self.socket.write(enc).unwrap();  // Send key data
         } else {  // Receive symmetric key
@@ -181,7 +181,7 @@ impl SecureSocket {
             self.socket.read(&mut header_raw).unwrap();
             let header = PacketHeader::from_bytes(header_raw);
             let key_enc = vec![0u8; header.data_len.try_into().unwrap()];
-            key = self.private_rsa.decrypt(PaddingScheme::PKCS1v15Encrypt, &key_enc).unwrap();
+            key = self.private_rsa.decrypt(PaddingScheme::new_pkcs1v15_encrypt(), &key_enc).unwrap();
         }
 
         self.cipher = ChaCha20Poly1305::new(Key::from_slice(&key));           // Reinitialize cipher using key data
