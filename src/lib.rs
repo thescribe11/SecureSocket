@@ -387,7 +387,7 @@ impl SecureSocket {
     }
 
 
-    pub fn send_archive (&mut self, hostname: String) -> Result<(), Reason> {
+    pub fn send_archive (&mut self, hostname: String, file: File) -> Result<(), Reason> {
         //! Send a file over the network
         
         match self.send_hostname(hostname) {
@@ -397,16 +397,6 @@ impl SecureSocket {
                 return Err(Reason::Closed)
             }
         };
-
-        let f = match File::open("/tmp/file_backup_archive.tar.gz") {
-            Ok(v) => v,
-            Err(e) => {
-                println!("Error opening file for transmission: {}", e);
-                return Err(Reason::BadData);
-            }
-        };
-
-
         
         let mut buf: Vec<u8>;
         let mut n = [0u8; 12];
