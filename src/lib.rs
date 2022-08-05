@@ -68,15 +68,15 @@ struct PacketHeader {
 impl PacketHeader {
     fn to_bytes(&self) -> [u8; 5] {
         let mut to_return: [u8; 5] = [0u8; 5];
-        to_return[0] = (self.purpose as u8).to_le();
+        to_return[0] = self.purpose as u8;
         to_return[1..=4].copy_from_slice(&self.data_len.to_le_bytes());
 
         to_return
     }
 
-    fn from_bytes(raw: &[u8]) -> PacketHeader {
-        let purpose: PacketType = raw[0].to_ne_bytes()[0].into();
-        let data_len = u32::from_le_bytes(raw[1..4].try_into().unwrap());
+    fn from_bytes(raw: [u8; 5]) -> PacketHeader {
+        let purpose: PacketType = raw[0].into();
+        let data_len = u32::from_le_bytes(raw[1..5].try_into().unwrap());
 
         PacketHeader { purpose, data_len }
     }
@@ -132,7 +132,7 @@ impl SecureSocket {
             // Receive RSA public key
             let mut header_raw: [u8; 5] = [0u8; 5];
             self.socket.read_exact(&mut header_raw).unwrap();
-            let header: PacketHeader = PacketHeader::from_bytes(&header_raw);
+            let header: PacketHeader = PacketHeader::from_bytes(header_raw);
 
             his_pub = vec![0u8; header.data_len.try_into().unwrap()];
             match self.socket.read_exact(&mut his_pub) {
@@ -146,7 +146,7 @@ impl SecureSocket {
             // Receive RSA public key
             let mut header_raw: [u8; 5] = [0u8; 5];
             self.socket.read_exact(&mut header_raw).unwrap();
-            let header: PacketHeader = PacketHeader::from_bytes(&header_raw);
+            let header: PacketHeader = PacketHeader::from_bytes(header_raw);
 
             his_pub = vec![0u8; header.data_len.try_into().unwrap()];
             match self.socket.read_exact(&mut his_pub) {
@@ -179,7 +179,7 @@ impl SecureSocket {
         } else {  // Receive symmetric key
             let mut header_raw = [0u8; 5];
             self.socket.read(&mut header_raw).unwrap();
-            let header = PacketHeader::from_bytes(&header_raw);
+            let header = PacketHeader::from_bytes(header_raw);
             let key_enc = vec![0u8; header.data_len.try_into().unwrap()];
             key = self.private_rsa.decrypt(PaddingScheme::PKCS1v15Encrypt, &key_enc).unwrap();
         }
@@ -201,7 +201,7 @@ impl SecureSocket {
                 return Err(Reason::Other);
             }
         };
-        let header = PacketHeader::from_bytes(&header);
+        let header = PacketHeader::from_bytes(header);
 
         match header.purpose {
             PacketType::KeyTest => {
