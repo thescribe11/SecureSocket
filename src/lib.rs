@@ -69,7 +69,7 @@ impl PacketHeader {
     fn to_bytes(&self) -> [u8; 5] {
         let mut to_return: [u8; 5] = [0u8; 5];
         to_return[0] = (self.purpose as u8).to_le();
-        to_return[1..4].copy_from_slice(&self.data_len.to_le_bytes());
+        to_return[1..=4].copy_from_slice(&self.data_len.to_le_bytes());
 
         to_return
     }
