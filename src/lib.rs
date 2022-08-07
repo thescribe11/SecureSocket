@@ -1,13 +1,15 @@
 use core::panic;
+use std::fmt::Display;
 use std::net::TcpStream;
 use std::io::{Read, Write, BufReader, BufWriter};
 use std::fs::File;
 
-use rsa::{PublicKey, RsaPrivateKey, RsaPublicKey, PaddingScheme, pkcs1::{EncodeRsaPublicKey, DecodeRsaPublicKey}};
 const RSA_BITS: usize = 2048;
 
 use rand::rngs::ThreadRng;
 use rand::{Fill, RngCore};
+
+use rsa::{PublicKey, RsaPrivateKey, RsaPublicKey, PaddingScheme};
 
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce, KeyInit};
 use chacha20poly1305::aead::{Aead};
@@ -29,6 +31,16 @@ pub enum Reason {
     Other,
     BadData,
     Interrupted,
+}
+impl Display for Reason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match *self {
+            Reason::Closed => "Socket Closed",
+            Reason::Other => "Socket Error: Other",
+            Reason::BadData => "Socket Error: Bad Data",
+            Reason::Interrupted => "Socket Error: Interrupted",
+        })
+    }
 }
 
 
@@ -74,11 +86,17 @@ impl PacketHeader {
         to_return
     }
 
-    fn from_bytes(raw: [u8; 5]) -> PacketHeader {
+    fn from_bytes(raw: [u8; 5]) -> Option<PacketHeader> {
         let purpose: PacketType = raw[0].into();
-        let data_len = u32::from_le_bytes(raw[1..5].try_into().unwrap());
+        let data_len = u32::from_le_bytes(match raw[1..5].try_into() {
+            Ok(v) => v,
+            Err(e) => {
+                println!("{}", e);
+                return None
+            }
+        });
 
-        PacketHeader { purpose, data_len }
+        Some(PacketHeader { purpose, data_len })
     }
 }
 
@@ -86,114 +104,218 @@ impl PacketHeader {
 pub struct SecureSocket {
     socket: TcpStream,
     rng: ThreadRng,
-    private_rsa: RsaPrivateKey,
-    public_rsa: RsaPublicKey,
-    his_rsa: RsaPublicKey,
     cipher: ChaCha20Poly1305,
 }
 
 impl SecureSocket {
-    pub fn new (sock: TcpStream, role: SocketRole) -> SecureSocket {
+    #[allow(unused_must_use)]
+    pub fn new (sock: TcpStream, role: SocketRole) -> Option<SecureSocket> {
+        //! Create a brand spankin' new Secure Socket.
+        //! 
+        //! I believe the arguments are more or less self-explanatory, so I won't bother to explain them.
+
+        #[allow(unused_mut)]  // It very definitely *does* need to be mutable
         let mut rng = rand::thread_rng();
-        let private_key = RsaPrivateKey::new(&mut rng, RSA_BITS).unwrap();
-        let public_key = RsaPublicKey::from(&private_key);
 
         let mut ssocket = SecureSocket {
             socket: sock,
             rng,
-            private_rsa: private_key,
-            public_rsa: public_key.clone(),
-            his_rsa: public_key,
             cipher: ChaCha20Poly1305::new(Key::from_slice(&[0u8; 32]))
         };
 
         ssocket.exchange_keys(role);
 
-        return ssocket;
+        return Some(ssocket);
     }
 
     fn exchange_keys (&mut self, role: SocketRole) {
         //! Exchange cryptographic keys.
         
-        let enc_rsa = self.public_rsa.to_pkcs1_der().unwrap();
-        let mut his_pub: Vec<u8>;
-        
+        let public_key: RsaPublicKey;
+        let private_key: RsaPrivateKey = match RsaPrivateKey::new(&mut self.rng, RSA_BITS) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("Error initializing RSA private key: {}", e);
+                self.close_conn();
+                return
+            }
+        };
         if role == SocketRole::Server {  // Setup server socket
-            // Send RSA public key
-            self.socket.write(
-            &PacketHeader {
-                    purpose: PacketType::SendRSA,
-                    data_len: enc_rsa.as_ref().len().try_into().unwrap()
-                }.to_bytes()
-            ).unwrap();
-            self.socket.write(enc_rsa.as_ref()).unwrap();
-
-
-            // Receive RSA public key
-            let mut header_raw: [u8; 5] = [0u8; 5];
-            self.socket.read_exact(&mut header_raw).unwrap();
-            let header: PacketHeader = PacketHeader::from_bytes(header_raw);
-
-            his_pub = vec![0u8; header.data_len.try_into().unwrap()];
-            match self.socket.read_exact(&mut his_pub) {
+            let mut header_raw = [0u8; 5];
+            match self.socket.read(&mut header_raw) {
                 Ok(_) => {},
                 Err(e) => {
-                    println!("{}", e);
+                    println!("Unable to receive header: {}", e);
+                    self.close_conn();
+                    return;
+                }
+            }
+            let data_len: usize = match match PacketHeader::from_bytes(header_raw) {  // Step 1: Convert header
+                Some(v) => v,
+                None => {
+                    self.close_conn();
+                    return;
+                }
+            }.data_len.try_into() {  // Step 2: Convert data_len from u32 to usize
+                Ok(v) => v,
+                Err(e) => {
+                    println!("ERROR: Unable to convert packet header data: {}", e);
+                    self.close_conn();
                     return;
                 }
             };
+
+            let mut pub_enc = vec![0u8; data_len];
+            match self.socket.read_exact(&mut pub_enc) {
+                Ok(_) => {},
+                Err(e) => {
+                    println!("ERROR: Unable to read public key: {}", e);
+                    self.close_conn();
+                    return;
+                }
+            }
+
+            public_key = match rmp_serde::decode::from_slice(&pub_enc) {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("ERROR: Unable to deserialize public key: {}", e);
+                    self.close_conn();
+                    return;
+                }
+            }
         } else {  // Setup client socket
-            // Receive RSA public key
-            let mut header_raw: [u8; 5] = [0u8; 5];
-            self.socket.read_exact(&mut header_raw).unwrap();
-            let header: PacketHeader = PacketHeader::from_bytes(header_raw);
-
-            his_pub = vec![0u8; header.data_len.try_into().unwrap()];
-            match self.socket.read_exact(&mut his_pub) {
-                Ok(_) => {},
+            public_key = RsaPublicKey::from(&private_key);
+            let pub_enc = match rmp_serde::encode::to_vec(&public_key) {
+                Ok(v) => v,
                 Err(e) => {
-                    println!("{}", e);
+                    println!("Unable to serialize public key: {}", e);
+                    self.close_conn();
                     return;
                 }
             };
-
-            // Send RSA public key
-            self.socket.write(
-                &PacketHeader {
-                        purpose: PacketType::SendRSA,
-                        data_len: enc_rsa.as_ref().len().try_into().unwrap()
-                    }.to_bytes()
-            ).unwrap();
-            self.socket.write(enc_rsa.as_ref()).unwrap();
+            match self.socket.write(&PacketHeader {purpose: PacketType::SendRSA, data_len: pub_enc.len() as u32}.to_bytes()) {
+                Ok(_) => {},
+                Err(e) => {
+                    println!("Unable to send public key: {}", e);
+                    self.close_conn();
+                    return;
+                }
+            };
+            match self.socket.write(&pub_enc) {
+                Ok(_) => {},
+                Err(e) => {
+                    println!("Unable to send public key: {}", e);
+                    self.close_conn();
+                    return;
+                }
+            }
         }
+
         
-        let his_pub: RsaPublicKey = RsaPublicKey::from_pkcs1_der(&his_pub).unwrap();
-        self.his_rsa = his_pub;
 
         let mut key = vec![0u8; 32];
         let padding = PaddingScheme::new_pkcs1v15_encrypt();
         if role == SocketRole::Server {  // Send symmetric key
-            key.try_fill(&mut self.rng).unwrap();  // Create key raw data
-            let enc = &self.his_rsa.encrypt(&mut self.rng, padding, &key[..]).unwrap();
-            self.socket.write_all(PacketHeader {purpose: PacketType::SendKey, data_len: enc.len() as u32}.to_bytes().as_ref()).unwrap();
-            self.socket.write(enc).unwrap();  // Send key data
+            match key.try_fill(&mut self.rng){  // Create key raw data
+                Ok(_) => {},
+                Err(e) => {
+                    println!("{}", e);
+                    self.close_conn();
+                    return;
+                }
+            }
+
+            let enc: Vec<u8> = match public_key.encrypt(&mut self.rng, padding, &key[..]) {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("Unable to encrypt symmetric key: {}", e);
+                    self.close_conn();
+                    return;
+                }
+            };
+
+            match self.socket.write(&enc){
+                Ok(_) => {},
+                Err(e) => {
+                    println!("{}", e);
+                    self.close_conn();
+                    return;
+                }
+            }  // Send key data
         } else {  // Receive symmetric key
-            let mut header_raw = [0u8; 5];
-            self.socket.read(&mut header_raw).unwrap();
-            let header = PacketHeader::from_bytes(header_raw);
-            let key_enc = vec![0u8; header.data_len.try_into().unwrap()];
-            key = self.private_rsa.decrypt(padding, &key_enc).unwrap();
+            let mut key_enc = vec![0u8; 256];  // Receive encrypted key
+            match self.socket.read_exact(&mut key_enc) {
+                Ok(_) => {},
+                Err(e) => {
+                    println!("ERROR: Unable to receive symmetric key data: {}", e);
+                    self.close_conn();
+                    return;
+                }
+            }
+
+            key = match private_key.decrypt(padding, &key_enc) {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("Unable to decrypt symmetric key: {}", e);
+                    self.close_conn();
+                    return;
+                }
+            }  // Decrypt key
         }
 
         self.cipher = ChaCha20Poly1305::new(Key::from_slice(&key));           // Reinitialize cipher using key data
-        
 
-
-        // Test packet
-        self.recv().unwrap();
+        if role == SocketRole::Server {
+            match self.recv() {
+                Ok(_) => println!("Test packet succeeded."),
+                Err(e) => {
+                    println!("Test packet FAILED: {}", e);
+                    self.close_conn();
+                    return;
+                }
+            }
+        } else {
+            let mut n = [0u8; 12];
+            self.rng.fill_bytes(&mut n);
+            let nonce = Nonce::from_slice(&n);
+            let data = match  self.cipher.encrypt(nonce, b"HELLO".as_ref()) {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("Unable to encrypt test packet: {}", e);
+                    self.close_conn();
+                    return;
+                }
+            };
+            
+            let header = PacketHeader { purpose: PacketType::KeyTest, data_len: data.len() as u32 };
+            match self.socket.write(&header.to_bytes()) {
+                Ok(_) => {},
+                Err(e) => {
+                    println!("Unable to send test packet: {}", e);
+                    self.close_conn();
+                    return;
+                }
+            }
+            match self.socket.write(&n) {
+                Ok(_) => {},
+                Err(e) => {
+                    println!("Unable to send test packet nonce: {}", e);
+                    self.close_conn();
+                    return;
+                }
+            }
+            match self.socket.write(&data) {
+                Ok(_) => {},
+                Err(e) => {
+                    println!("Unable to send test packet: {}", e);
+                    self.close_conn();
+                    return;
+                }
+            }
+        }
     }
 
-    pub fn recv(&mut self) -> Result<(), Reason> {
+    pub fn recv(&mut self) -> Result<String, Reason> {
         let mut header = [0u8; 5];
         match self.socket.read_exact(&mut header) {
             Ok(_) => {},
@@ -202,7 +324,14 @@ impl SecureSocket {
                 return Err(Reason::Other);
             }
         };
-        let header = PacketHeader::from_bytes(header);
+        let header = match PacketHeader::from_bytes(header) {
+            Some(v) => v,
+            None => {
+                self.close_conn();
+                println!("Unable to deserialize packet header.");
+                return Err(Reason::BadData);
+            }
+        };
 
         match header.purpose {
             PacketType::KeyTest => {
@@ -212,7 +341,7 @@ impl SecureSocket {
 
                 let mut data = vec![0u8; header.data_len.try_into().unwrap()];
                 self.socket.read(&mut data).unwrap();
-                self.cipher.decrypt(&nonce, &*data).unwrap();
+                let data: Vec<u8> = self.cipher.decrypt(&nonce, &*data).unwrap();
                 
                 if data != b"HELLO" {
                     self.socket.write(
@@ -221,6 +350,9 @@ impl SecureSocket {
                             data_len: 0u32
                         }.to_bytes()
                     ).unwrap();
+                    println!("The test packet was the imposter.");
+                    println!(" - HELP: The received data is {}", String::from_utf8_lossy(&data));
+                    return Err(Reason::BadData);
                 } else {
                     self.socket.write(
                         &PacketHeader {
@@ -228,6 +360,7 @@ impl SecureSocket {
                             data_len: 0u32
                         }.to_bytes()
                     ).unwrap();
+                    return Ok(String::from("HELLO"));
                 }
             },
             PacketType::CloseCon | PacketType::Bad | PacketType::Good | PacketType::SendRSA | PacketType::Metadata | PacketType::FileData => {
@@ -328,7 +461,13 @@ impl SecureSocket {
         let mut raw_buf: Vec<u8>;
 
         loop {
-            self.socket.read_exact(&mut nonce_raw);
+            match self.socket.read_exact(&mut nonce_raw) {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("{}", e);
+                    return Err(Reason::Interrupted);
+                }
+            };
             nonce = Nonce::from_slice(&nonce_raw);
 
             self.socket.read_exact(&mut len_buf).unwrap();

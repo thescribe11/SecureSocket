@@ -1,2 +1,6 @@
 /target
 /Cargo.lock
+/testing
+/testing2
+test.sh
+/.vscode/
