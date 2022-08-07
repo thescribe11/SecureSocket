@@ -8,3 +8,4 @@ I created this for a file backup application I've been working on as a hobby pro
 - It probably never will be.
 - Seeing as this is a component of a hobby project, I can't guarantee any kind of consistent updates.
 - I've only tested it on 64-bit Linux systems.
+- At the moment it's "slightly" unfinished.
